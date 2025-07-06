@@ -1,5 +1,13 @@
+# Core Data Handling
 pandas
 numpy
+
+# EDA & Visualization
+matplotlib
+seaborn
+plotly
+
+# Machine Learning
 scikit-learn
 sentence-transformers
 langchain
@@ -9,3 +17,12 @@ transformers
 torch
 gradio 
 # streamlit
+
+# Dev Tools
+ipykernel
+jupyter
+
+
+# GitHub Actions (testing and linting support, optional)
+pytest
+flake8
