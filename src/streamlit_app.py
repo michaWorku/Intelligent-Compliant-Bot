@@ -34,8 +34,13 @@ CHROMADB_PATH = LOCAL_CHROMADB_DIR # ChromaDB expects a directory path
 CHROMADB_COLLECTION_NAME = 'complaint_chunks'
 
 # Hugging Face Hub Repository details
-HF_REPO_ID = "michaWorku/credittrust-rag" #
-HF_REPO_TYPE = "dataset" # Or "model" if you chose that type
+HF_REPO_ID = "michaWorku/credittrust-rag" # <<< CONFIRMED: YOUR HF USERNAME AND REPO NAME
+HF_REPO_TYPE = "dataset"
+
+# *** REVERTED CHANGE HERE ***
+# Now that 'vector_store' is a directory in HF, this prefix is correct again.
+HF_DATA_ROOT_PREFIX = "vector_store/"
+
 
 EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 LLM_MODEL_NAME = "google/flan-t5-small"
@@ -44,70 +49,70 @@ TOP_K_RETRIEVAL = 5
 
 # --- Function to Download Vector Store from Hugging Face Hub ---
 @st.cache_resource
-def download_vector_store_from_hf(repo_id: str, repo_type: str, local_dir: str):
+def download_vector_store_from_hf(repo_id: str, repo_type: str, local_base_dir: str, hf_data_root_prefix: str):
     """
-    Downloads vector store files from Hugging Face Hub to a local directory.
+    Downloads vector store files from Hugging Face Hub to a local directory,
+    preserving the subdirectory structure.
     """
-    if os.path.exists(local_dir) and len(os.listdir(local_dir)) > 0:
-        print(f"Vector store already exists at {local_dir}. Skipping download.")
+    # Check if the target local directories already exist and contain files
+    # Check for a key file to determine if download is needed
+    faiss_bin_exists = os.path.exists(os.path.join(local_base_dir, 'faiss_index', 'faiss_index.bin'))
+    if faiss_bin_exists:
+        print(f"Vector store already exists at {local_base_dir}. Skipping download.")
         return
 
-    print(f"Downloading vector store from Hugging Face Hub '{repo_id}' to '{local_dir}'...")
+    print(f"Downloading vector store from Hugging Face Hub '{repo_id}' under '{hf_data_root_prefix}' to '{local_base_dir}'...")
     
-    # Ensure local directories exist
-    os.makedirs(os.path.join(local_dir, 'faiss_index'), exist_ok=True)
-    os.makedirs(os.path.join(local_dir, 'chroma_db'), exist_ok=True)
-
     fs = HfFileSystem()
     
-    # List all files in the 'vector_store' directory within the HF repo
-    # This assumes your files are directly under the 'vector_store' folder in the repo
-    # e.g., your_hf_username/credittrust-rag/vector_store/faiss_index/...
-    
-    # Adjust this prefix if your files are directly at the root of the HF dataset repo
-    # If your files are directly in the root of the HF dataset, use "" as prefix.
-    # If they are under a 'vector_store' folder, use "vector_store/"
-    hf_folder_prefix = "vector_store/" # Adjust if your HF repo structure is different
-
+    # List all files in the specified prefix within the HF repo
     try:
-        files_to_download = fs.ls(f"{repo_id}/{hf_folder_prefix}", detail=False)
-        download_count = 0
-        for hf_file_path in files_to_download:
-            # Extract the relative path within the 'vector_store' folder
-            relative_path = os.path.relpath(hf_file_path, f"{repo_id}/{hf_folder_prefix}")
-            local_file_path = os.path.join(local_dir, relative_path)
-            
-            # Ensure subdirectory exists for the file
-            os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
-
-            if not hf_file_path.endswith('/'): # Skip directories themselves
-                print(f"Downloading {hf_file_path} to {local_file_path}...")
-                hf_hub_download(
-                    repo_id=repo_id,
-                    filename=os.path.join(hf_folder_prefix, relative_path), # Path within the HF repo
-                    repo_type=repo_type,
-                    local_dir=local_dir, # Download to the base local_dir
-                    local_dir_use_symlinks=False # Important for non-model files
-                )
-                download_count += 1
-        
-        if download_count > 0:
-            print(f"Successfully downloaded {download_count} files from Hugging Face Hub.")
-        else:
-            st.warning(f"No files found in Hugging Face Hub repo '{repo_id}' under prefix '{hf_folder_prefix}'. "
-                       f"Please check your repo ID and prefix. Vector stores might not be loaded.")
-
+        # List contents of the 'vector_store/' directory in HF repo
+        hf_files = fs.ls(f"{repo_id}/{hf_data_root_prefix}", detail=False, recursive=True)
+        # Filter out directories, keep only actual file paths
+        hf_file_paths = [f for f in hf_files if not fs.isdir(f)]
     except Exception as e:
-        st.error(f"Failed to download files from Hugging Face Hub: {e}")
-        st.error("Please ensure your HF_REPO_ID and HF_REPO_TYPE are correct and the files exist.")
+        st.error(f"Failed to list files from Hugging Face Hub '{repo_id}' under '{hf_data_root_prefix}': {e}")
+        st.error("Please ensure your HF_REPO_ID and HF_DATA_ROOT_PREFIX are correct and the dataset is accessible.")
         st.stop()
+
+    download_count = 0
+    for hf_full_path in hf_file_paths:
+        # Extract the path relative to the HF_DATA_ROOT_PREFIX
+        # e.g., 'michaWorku/credittrust-rag/vector_store/faiss_index/faiss_index.bin' -> 'faiss_index/faiss_index.bin'
+        relative_path_in_repo = os.path.relpath(hf_full_path, f"{repo_id}/{hf_data_root_prefix}")
+        
+        # Construct the local download path
+        local_file_path = os.path.join(local_base_dir, relative_path_in_repo)
+        
+        # Ensure the local subdirectory exists before downloading the file
+        os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
+
+        print(f"Downloading {relative_path_in_repo} to {local_file_path}...")
+        try:
+            hf_hub_download(
+                repo_id=repo_id,
+                filename=os.path.join(hf_data_root_prefix, relative_path_in_repo), # Path of the file *within* the HF repo
+                repo_type=repo_type,
+                local_dir=local_base_dir, # Download to the base local_dir
+                local_dir_use_symlinks=False # Important for non-model files
+            )
+            download_count += 1
+        except Exception as e:
+            st.warning(f"Could not download {relative_path_in_repo}: {e}")
+
+    if download_count > 0:
+        print(f"Successfully downloaded {download_count} files from Hugging Face Hub.")
+    else:
+        st.warning(f"No files were downloaded from Hugging Face Hub repo '{repo_id}' under prefix '{hf_data_root_prefix}'. "
+                   f"Please check your repo ID, prefix, and file existence.")
 
 
 # --- Global RAG Pipeline Initialization ---
 @st.cache_resource
 def initialize_rag_pipeline():
     # First, download the vector store files
-    download_vector_store_from_hf(HF_REPO_ID, HF_REPO_TYPE, LOCAL_VECTOR_STORE_DIR)
+    download_vector_store_from_hf(HF_REPO_ID, HF_REPO_TYPE, LOCAL_VECTOR_STORE_DIR, HF_DATA_ROOT_PREFIX)
 
     print("Initializing RAG components for Streamlit app...")
     try:
