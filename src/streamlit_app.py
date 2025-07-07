@@ -4,8 +4,8 @@ import sys
 import pandas as pd
 from typing import List, Dict, Union
 
-# --- Path Configuration for app.py being inside 'src/' ---
-# Get the directory where app.py is located (e.g., .../your_project_root/src/)
+# --- Path Configuration ---
+# Get the directory where app.py is located 
 current_script_dir = os.path.dirname(os.path.abspath(__file__))
 
 # Define the project root directory (one level up from current_script_dir)
@@ -16,8 +16,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 try:
-    # Now, import rag_pipeline assuming it's in src/rag_pipeline.py
-    from src.rag_pipeline import Retriever, Generator, RAGPipeline
+    from src.rag_pipeline import Retriever, Generator, RAGPipeline, CHROMADB_AVAILABLE # Import CHROMADB_AVAILABLE
     print("Successfully imported RAG pipeline components.")
 except ImportError as e:
     st.error(f"Error importing RAG pipeline components: {e}")
@@ -111,13 +110,19 @@ if prompt := st.chat_input("Your question..."):
                 st.session_state.sources = ""
             else:
                 # Get vector store choice from radio button
-                # This assumes the radio button is rendered before the prompt is submitted
-                # For robustness, you might store this in session_state as well.
                 vector_store_choice = st.session_state.get('vector_store_choice', 'faiss') # Default to faiss
 
-                result = rag_pipeline.run(prompt, k=TOP_K_RETRIEVAL, vector_store_type=vector_store_choice)
-                ai_response = result['answer']
-                st.session_state.sources = format_sources_for_display(result['sources'])
+                # Check if the chosen vector store is available
+                if vector_store_choice == 'chromadb' and not rag_pipeline.retriever.chroma_collection:
+                    ai_response = "ChromaDB is not available. Please select FAISS for retrieval."
+                    st.session_state.sources = ""
+                elif vector_store_choice == 'faiss' and (rag_pipeline.retriever.faiss_index is None or rag_pipeline.retriever.faiss_metadata is None):
+                    ai_response = "FAISS is not available. Please check the vector store files."
+                    st.session_state.sources = ""
+                else:
+                    result = rag_pipeline.run(prompt, k=TOP_K_RETRIEVAL, vector_store_type=vector_store_choice)
+                    ai_response = result['answer']
+                    st.session_state.sources = format_sources_for_display(result['sources'])
             
             st.markdown(ai_response)
             st.session_state.messages.append({"role": "assistant", "content": ai_response})
@@ -127,12 +132,21 @@ with st.sidebar:
     st.header("Settings")
     
     # Vector Store Selection
+    # Disable ChromaDB option if not available
+    options = ["faiss"]
+    if CHROMADB_AVAILABLE and rag_pipeline and rag_pipeline.retriever.chroma_collection:
+        options.append("chromadb")
+    
     st.session_state.vector_store_choice = st.radio(
         "Choose Vector Store for Retrieval:",
-        ("faiss", "chromadb"),
+        options,
+        index=0, # Default to FAISS
         key="vector_store_radio", # Unique key for the radio button
         help="Select which vector database to use for retrieving relevant complaint chunks."
     )
+    
+    if "chromadb" not in options:
+        st.warning("ChromaDB is not available. This might be due to deployment environment limitations.")
 
     # Clear Chat Button
     if st.button("Clear Chat", help="Clear the conversation history and retrieved sources."):
