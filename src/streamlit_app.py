@@ -85,13 +85,12 @@ def download_vector_store_from_hf(repo_id: str, repo_type: str, local_base_dir: 
         st.error("Please ensure your HF_REPO_ID is correct and the dataset is accessible (check private repo if applicable).")
         return False
 
-    download_success = True
-    downloaded_files_count = 0
+    download_count = 0
     for filename_in_repo in hf_file_paths_to_download:
         # The expected local path where this specific file will land
         expected_local_file_path = os.path.join(local_base_dir, filename_in_repo)
         
-        # Ensure the local subdirectory structure exists
+        # Ensure the local subdirectory exists before downloading the file
         os.makedirs(os.path.dirname(expected_local_file_path), exist_ok=True)
 
         print(f"Downloading '{filename_in_repo}' to expected local path '{expected_local_file_path}'...")
@@ -100,13 +99,13 @@ def download_vector_store_from_hf(repo_id: str, repo_type: str, local_base_dir: 
                 repo_id=repo_id,
                 filename=filename_in_repo,
                 repo_type=repo_type,
-                local_dir=local_base_dir, # This is the base for the HF repo structure
+                local_dir=local_base_dir,
                 local_dir_use_symlinks=False
             )
             print(f"Successfully downloaded '{filename_in_repo}' to '{downloaded_path}'")
             downloaded_files_count += 1
         except Exception as e:
-            st.warning(f"Failed to download '{filename_in_repo}': {e}")
+            st.warning(f"Could not download '{filename_in_repo}': {e}")
             download_success = False
 
     if downloaded_files_count > 0:
@@ -235,7 +234,7 @@ with st.sidebar:
     if st.button("Clear Chat", help="Clear the conversation history and retrieved sources."):
         st.session_state.messages = []
         st.session_state.sources = ""
-        st.experimental_rerun()
+        st.rerun()
 
 if st.session_state.sources:
     with st.expander("Show Retrieved Sources"):
