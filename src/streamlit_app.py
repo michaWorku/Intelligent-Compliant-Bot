@@ -5,7 +5,7 @@ import pandas as pd
 from typing import List, Dict, Union
 
 # Import Hugging Face Hub client
-from huggingface_hub import hf_hub_download, HfFileSystem
+from huggingface_hub import hf_hub_download, list_repo_files # Changed: Import list_repo_files
 
 # --- Path Configuration for app.py being inside 'src/' ---
 current_script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -34,7 +34,7 @@ CHROMADB_PATH = LOCAL_CHROMADB_DIR # ChromaDB expects a directory path
 CHROMADB_COLLECTION_NAME = 'complaint_chunks'
 
 # Hugging Face Hub Repository details
-HF_REPO_ID = "michaWorku/credittrust-rag" # 
+HF_REPO_ID = "michaWorku/credittrust-rag" #  HF USERNAME AND REPO NAME
 HF_REPO_TYPE = "dataset"
 
 # This is the prefix for the folder *within* the Hugging Face dataset
@@ -55,7 +55,6 @@ def download_vector_store_from_hf(repo_id: str, repo_type: str, local_base_dir: 
     preserving the subdirectory structure.
     """
     # Check if a key file exists to determine if download is needed
-    # This prevents re-downloading on every Streamlit rerun
     faiss_bin_exists = os.path.exists(os.path.join(local_base_dir, 'faiss_index', 'faiss_index.bin'))
     if faiss_bin_exists:
         print(f"Vector store already exists at {local_base_dir}. Skipping download.")
@@ -63,20 +62,15 @@ def download_vector_store_from_hf(repo_id: str, repo_type: str, local_base_dir: 
 
     print(f"Downloading vector store from Hugging Face Hub '{repo_id}' under '{hf_data_root_prefix}' to '{local_base_dir}'...")
     
-    fs = HfFileSystem()
-    
     try:
-        # List ALL files in the repository recursively from the root of the repo_id
-        # This is more robust against fs.ls misinterpreting subpaths as repo IDs
-        all_hf_files_in_repo = fs.ls(repo_id, detail=False, recursive=True)
+        # *** CRITICAL CHANGE: Use list_repo_files instead of HfFileSystem.ls ***
+        # list_repo_files returns paths relative to the repo root directly, e.g., 'vector_store/faiss_index/faiss_index.bin'
+        all_files_in_repo = list_repo_files(repo_id=repo_id, repo_type=repo_type, revision="main") # Explicitly target 'main' branch
         
         # Filter for files that start with the desired prefix (e.g., 'vector_store/faiss_index/...')
-        # Ensure the prefix is correctly formatted for comparison
-        full_prefix_for_filter = f"{repo_id}/{hf_data_root_prefix}"
-        
         hf_file_paths_to_download = [
-            f for f in all_hf_files_in_repo
-            if f.startswith(full_prefix_for_filter) and not fs.isdir(f) # Exclude directories themselves
+            f for f in all_files_in_repo
+            if f.startswith(hf_data_root_prefix) # Check if path starts with 'vector_store/'
         ]
         
     except Exception as e:
@@ -85,15 +79,12 @@ def download_vector_store_from_hf(repo_id: str, repo_type: str, local_base_dir: 
         st.stop()
 
     download_count = 0
-    for hf_full_path in hf_file_paths_to_download:
-        # Extract the path relative to the HF_REPO_ID for the 'filename' argument of hf_hub_download
-        # Example: hf_full_path = "michaWorku/credittrust-rag/vector_store/faiss_index/faiss_index.bin"
-        # filename_in_repo = "vector_store/faiss_index/faiss_index.bin"
-        filename_in_repo = os.path.relpath(hf_full_path, repo_id)
-        
-        # Construct the local download path, preserving the structure relative to LOCAL_VECTOR_STORE_DIR
-        # Example: local_file_path = "downloaded_vector_store/faiss_index/faiss_index.bin"
-        local_file_path = os.path.join(local_base_dir, os.path.relpath(filename_in_repo, hf_data_root_prefix))
+    for filename_in_repo in hf_file_paths_to_download:
+        # Construct the local download path, ensuring we strip the hf_data_root_prefix
+        # Example: filename_in_repo = "vector_store/faiss_index/faiss_index.bin"
+        # path_relative_to_downloaded_vector_store = "faiss_index/faiss_index.bin"
+        path_relative_to_downloaded_vector_store = os.path.relpath(filename_in_repo, hf_data_root_prefix)
+        local_file_path = os.path.join(local_base_dir, path_relative_to_downloaded_vector_store)
         
         # Ensure the local subdirectory exists before downloading the file
         os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
