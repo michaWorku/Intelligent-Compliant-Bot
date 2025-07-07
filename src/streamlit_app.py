@@ -5,13 +5,13 @@ import pandas as pd
 from typing import List, Dict, Union
 
 # Import Hugging Face Hub client
-from huggingface_hub import hf_hub_download, list_repo_files # Changed: Import list_repo_files
+from huggingface_hub import hf_hub_download, list_repo_files
 
 # --- Path Configuration for app.py being inside 'src/' ---
 current_script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.join(current_script_dir, '..')
 if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+    sys.sys.path.insert(0, project_root)
 
 try:
     from src.rag_pipeline import Retriever, Generator, RAGPipeline, CHROMADB_AVAILABLE
@@ -24,9 +24,12 @@ except ImportError as e:
 
 # --- Configuration for Vector Store Paths and Hugging Face Hub ---
 # Local paths where vector stores will be downloaded
-LOCAL_VECTOR_STORE_DIR = "downloaded_vector_store" # A temporary directory in the container
-LOCAL_FAISS_INDEX_DIR = os.path.join(LOCAL_VECTOR_STORE_DIR, 'faiss_index')
-LOCAL_CHROMADB_DIR = os.path.join(LOCAL_VECTOR_STORE_DIR, 'chroma_db')
+LOCAL_VECTOR_STORE_DIR = "downloaded_vector_store" # A temporary base directory in the container
+
+# *** CRITICAL CHANGE HERE ***
+# These paths now include the 'vector_store' subdirectory that is created during download.
+LOCAL_FAISS_INDEX_DIR = os.path.join(LOCAL_VECTOR_STORE_DIR, 'vector_store', 'faiss_index')
+LOCAL_CHROMADB_DIR = os.path.join(LOCAL_VECTOR_STORE_DIR, 'vector_store', 'chroma_db')
 
 FAISS_INDEX_PATH = os.path.join(LOCAL_FAISS_INDEX_DIR, 'faiss_index.bin')
 FAISS_METADATA_PATH = os.path.join(LOCAL_FAISS_INDEX_DIR, 'faiss_metadata.csv')
@@ -34,7 +37,7 @@ CHROMADB_PATH = LOCAL_CHROMADB_DIR # ChromaDB expects a directory path
 CHROMADB_COLLECTION_NAME = 'complaint_chunks'
 
 # Hugging Face Hub Repository details
-HF_REPO_ID = "michaWorku/credittrust-rag" #  HF USERNAME AND REPO NAME
+HF_REPO_ID = "michaWorku/credittrust-rag"
 HF_REPO_TYPE = "dataset"
 
 # This is the prefix for the folder *within* the Hugging Face dataset
@@ -55,22 +58,20 @@ def download_vector_store_from_hf(repo_id: str, repo_type: str, local_base_dir: 
     preserving the subdirectory structure.
     """
     # Check if a key file exists to determine if download is needed
-    faiss_bin_exists = os.path.exists(os.path.join(local_base_dir, 'faiss_index', 'faiss_index.bin'))
+    # Now checking for the file in the *expected* final location after download
+    faiss_bin_exists = os.path.exists(os.path.join(local_base_dir, 'vector_store', 'faiss_index', 'faiss_index.bin'))
     if faiss_bin_exists:
-        print(f"Vector store already exists at {local_base_dir}. Skipping download.")
+        print(f"Vector store already exists at {os.path.join(local_base_dir, 'vector_store')}. Skipping download.")
         return
 
     print(f"Downloading vector store from Hugging Face Hub '{repo_id}' under '{hf_data_root_prefix}' to '{local_base_dir}'...")
     
     try:
-        # *** CRITICAL CHANGE: Use list_repo_files instead of HfFileSystem.ls ***
-        # list_repo_files returns paths relative to the repo root directly, e.g., 'vector_store/faiss_index/faiss_index.bin'
-        all_files_in_repo = list_repo_files(repo_id=repo_id, repo_type=repo_type, revision="main") # Explicitly target 'main' branch
+        all_files_in_repo = list_repo_files(repo_id=repo_id, repo_type=repo_type, revision="main")
         
-        # Filter for files that start with the desired prefix (e.g., 'vector_store/faiss_index/...')
         hf_file_paths_to_download = [
             f for f in all_files_in_repo
-            if f.startswith(hf_data_root_prefix) # Check if path starts with 'vector_store/'
+            if f.startswith(hf_data_root_prefix)
         ]
         
     except Exception as e:
@@ -80,23 +81,21 @@ def download_vector_store_from_hf(repo_id: str, repo_type: str, local_base_dir: 
 
     download_count = 0
     for filename_in_repo in hf_file_paths_to_download:
-        # Construct the local download path, ensuring we strip the hf_data_root_prefix
-        # Example: filename_in_repo = "vector_store/faiss_index/faiss_index.bin"
-        # path_relative_to_downloaded_vector_store = "faiss_index/faiss_index.bin"
-        path_relative_to_downloaded_vector_store = os.path.relpath(filename_in_repo, hf_data_root_prefix)
-        local_file_path = os.path.join(local_base_dir, path_relative_to_downloaded_vector_store)
+        # hf_hub_download will create the 'vector_store/' sub-directory inside local_base_dir
+        # so we don't need to manually strip hf_data_root_prefix from filename_in_repo for download.
+        local_target_path_for_print = os.path.join(local_base_dir, filename_in_repo)
         
         # Ensure the local subdirectory exists before downloading the file
-        os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
+        os.makedirs(os.path.dirname(local_target_path_for_print), exist_ok=True)
 
-        print(f"Downloading {filename_in_repo} to {local_file_path}...")
+        print(f"Downloading {filename_in_repo} to {local_target_path_for_print}...")
         try:
             hf_hub_download(
                 repo_id=repo_id,
-                filename=filename_in_repo, # This is the path of the file *within* the HF repo
+                filename=filename_in_repo,
                 repo_type=repo_type,
-                local_dir=local_base_dir, # Download to the base local_dir
-                local_dir_use_symlinks=False # Important for non-model files
+                local_dir=local_base_dir,
+                local_dir_use_symlinks=False
             )
             download_count += 1
         except Exception as e:
