@@ -2,11 +2,20 @@ import os
 import pandas as pd
 import numpy as np
 import faiss
-import chromadb
 from sentence_transformers import SentenceTransformer
-import torch
 from transformers import pipeline, set_seed
 from typing import List, Dict, Union
+
+# Try importing chromadb, but handle failure gracefully
+try:
+    import chromadb
+    CHROMADB_AVAILABLE = True
+except ImportError:
+    print("Warning: chromadb not installed. ChromaDB functionality will be unavailable.")
+    CHROMADB_AVAILABLE = False
+except Exception as e:
+    print(f"Warning: Error importing chromadb: {e}. ChromaDB functionality will be unavailable.")
+    CHROMADB_AVAILABLE = False
 
 # Set a seed for reproducibility if using models with randomness
 set_seed(42)
@@ -44,17 +53,19 @@ class Retriever:
             print(f"Warning: FAISS index or metadata not found. FAISS retrieval will be unavailable. "
                   f"Checked: {faiss_index_path} and {faiss_metadata_path}")
 
-        # Load ChromaDB components
-        if os.path.exists(chromadb_path) and os.path.isdir(chromadb_path):
-            self.chroma_client = chromadb.PersistentClient(path=chromadb_path)
+        # Load ChromaDB components only if available and path exists
+        if CHROMADB_AVAILABLE and os.path.exists(chromadb_path) and os.path.isdir(chromadb_path):
             try:
+                self.chroma_client = chromadb.PersistentClient(path=chromadb_path)
                 self.chroma_collection = self.chroma_client.get_collection(name=chromadb_collection_name)
                 print(f"ChromaDB collection '{chromadb_collection_name}' loaded successfully. Count: {self.chroma_collection.count()}")
             except Exception as e:
                 print(f"Warning: ChromaDB collection '{chromadb_collection_name}' not found or error loading: {e}. ChromaDB retrieval will be unavailable.")
                 self.chroma_collection = None
         else:
-            print(f"Warning: ChromaDB directory not found at {chromadb_path}. ChromaDB retrieval will be unavailable.")
+            if CHROMADB_AVAILABLE: # Only print this if chromadb was imported but path was bad
+                print(f"Warning: ChromaDB directory not found at {chromadb_path}. ChromaDB retrieval will be unavailable.")
+            # Else, message already printed by CHROMADB_AVAILABLE check
 
         if self.embedding_model is None:
             raise ValueError("Embedding model failed to load. Retriever cannot function.")
@@ -132,11 +143,14 @@ class Retriever:
             for i, idx in enumerate(indices[0]):
                 if idx < 0: # Handle cases where k is larger than available vectors
                     continue
+                # Ensure we handle cases where metadata might be smaller than index.ntotal
+                if idx >= len(self.faiss_metadata):
+                    print(f"Warning: FAISS index {idx} out of bounds for metadata. Skipping.")
+                    continue
+
                 chunk_id_from_faiss = self.faiss_metadata.index[idx] if self.faiss_metadata.index.name == 'chunk_id' else self.faiss_metadata.iloc[idx]['chunk_id']
                 
                 # Retrieve the full chunk data using chunk_id
-                # If chunk_id is the index, direct lookup is fast
-                # Otherwise, search by column
                 chunk_data = self.faiss_metadata.loc[chunk_id_from_faiss].to_dict() if self.faiss_metadata.index.name == 'chunk_id' else \
                              self.faiss_metadata[self.faiss_metadata['chunk_id'] == chunk_id_from_faiss].iloc[0].to_dict()
 
@@ -150,8 +164,8 @@ class Retriever:
             print(f"FAISS retrieval complete. Found {len(retrieved_chunks)} chunks.")
         
         elif vector_store_type.lower() == "chromadb":
-            if self.chroma_collection is None:
-                print("ChromaDB collection not loaded. Cannot perform ChromaDB retrieval.")
+            if not CHROMADB_AVAILABLE or self.chroma_collection is None:
+                print("ChromaDB not available or collection not loaded. Cannot perform ChromaDB retrieval.")
                 return []
             
             print(f"Retrieving top {k} chunks from ChromaDB...")
@@ -193,14 +207,15 @@ class Generator:
         """
         print(f"Initializing Generator with model: {model_name}...")
         try:
-            # Using 'text2text-generation' pipeline for models like Flan-T5
-            # For other models, you might need 'text-generation'
+            import torch # Import torch here to ensure it's available for pipeline
             self.llm_pipeline = pipeline("text2text-generation", model=model_name, device=0 if torch.cuda.is_available() else -1)
             print("LLM pipeline loaded successfully.")
+        except ImportError:
+            print("Warning: PyTorch not installed. LLM pipeline will use a dummy response.")
+            self.llm_pipeline = None
         except Exception as e:
             print(f"Error loading LLM model {model_name}: {e}")
             self.llm_pipeline = None
-            # Fallback for very limited environments or if model fails to load
             print("Warning: LLM pipeline failed to load. Generator will use a dummy response.")
 
     def generate_response(self, question: str, context: str) -> str:
@@ -230,8 +245,6 @@ class Generator:
 
         print("Generating response with LLM...")
         try:
-            # Max new tokens to control response length
-            # Adjust max_new_tokens based on expected answer length
             response = self.llm_pipeline(full_prompt, max_new_tokens=200, do_sample=True, top_k=50, top_p=0.95, temperature=0.7)[0]['generated_text']
             print("LLM response generated.")
             return response.strip()
@@ -320,13 +333,17 @@ if __name__ == "__main__":
             print(result_faiss['sources'][0]['text'][:200] + "...") # Print first 200 chars
 
         print("\n--- Testing with ChromaDB ---")
-        result_chroma = rag_pipeline.run(test_query, k=3, vector_store_type="chromadb")
-        print("\nGenerated Answer (ChromaDB):")
-        print(result_chroma['answer'])
-        print("\nTop Source (ChromaDB):")
-        if result_chroma['sources']:
-            print(f"Product: {result_chroma['sources'][0]['product']}, ID: {result_chroma['sources'][0]['original_id']}")
-            print(result_chroma['sources'][0]['text'][:200] + "...") # Print first 200 chars
+        if CHROMADB_AVAILABLE and retriever.chroma_collection: # Only test if ChromaDB loaded successfully
+            result_chroma = rag_pipeline.run(test_query, k=3, vector_store_type="chromadb")
+            print("\nGenerated Answer (ChromaDB):")
+            print(result_chroma['answer'])
+            print("\nTop Source (ChromaDB):")
+            if result_chroma['sources']:
+                print(f"Product: {result_chroma['sources'][0]['product']}, ID: {result_chroma['sources'][0]['original_id']}")
+                print(result_chroma['sources'][0]['text'][:200] + "...") # Print first 200 chars
+        else:
+            print("ChromaDB not available or not initialized, skipping test.")
+
 
     except Exception as e:
         print(f"\nError during RAG pipeline test: {e}")
