@@ -16,7 +16,7 @@ chromadb
 transformers
 torch
 gradio 
-# streamlit
+streamlit
 
 # Dev Tools
 ipykernel
