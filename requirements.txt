@@ -17,6 +17,7 @@ transformers
 torch
 gradio 
 streamlit
+huggingface_hub 
 
 # Dev Tools
 ipykernel
