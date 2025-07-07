@@ -11,7 +11,7 @@ from huggingface_hub import hf_hub_download, list_repo_files
 current_script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.join(current_script_dir, '..')
 if project_root not in sys.path:
-    sys.sys.path.insert(0, project_root)
+    sys.path.insert(0, project_root)
 
 try:
     from src.rag_pipeline import Retriever, Generator, RAGPipeline, CHROMADB_AVAILABLE
@@ -26,7 +26,6 @@ except ImportError as e:
 # Local paths where vector stores will be downloaded
 LOCAL_VECTOR_STORE_DIR = "downloaded_vector_store" # A temporary base directory in the container
 
-# *** CRITICAL CHANGE HERE ***
 # These paths now include the 'vector_store' subdirectory that is created during download.
 LOCAL_FAISS_INDEX_DIR = os.path.join(LOCAL_VECTOR_STORE_DIR, 'vector_store', 'faiss_index')
 LOCAL_CHROMADB_DIR = os.path.join(LOCAL_VECTOR_STORE_DIR, 'vector_store', 'chroma_db')
@@ -52,67 +51,89 @@ TOP_K_RETRIEVAL = 5
 
 # --- Function to Download Vector Store from Hugging Face Hub ---
 @st.cache_resource
-def download_vector_store_from_hf(repo_id: str, repo_type: str, local_base_dir: str, hf_data_root_prefix: str):
+def download_vector_store_from_hf(repo_id: str, repo_type: str, local_base_dir: str, hf_data_root_prefix: str) -> bool:
     """
     Downloads vector store files from Hugging Face Hub to a local directory,
-    preserving the subdirectory structure.
+    preserving the subdirectory structure. Returns True on successful download and verification, False otherwise.
     """
-    # Check if a key file exists to determine if download is needed
-    # Now checking for the file in the *expected* final location after download
-    faiss_bin_exists = os.path.exists(os.path.join(local_base_dir, 'vector_store', 'faiss_index', 'faiss_index.bin'))
-    if faiss_bin_exists:
-        print(f"Vector store already exists at {os.path.join(local_base_dir, 'vector_store')}. Skipping download.")
-        return
+    # Define the expected path for a key FAISS file after a successful download
+    faiss_bin_target_path = os.path.join(local_base_dir, 'vector_store', 'faiss_index', 'faiss_index.bin')
 
-    print(f"Downloading vector store from Hugging Face Hub '{repo_id}' under '{hf_data_root_prefix}' to '{local_base_dir}'...")
+    # Check if a key file already exists to determine if download is needed (for Streamlit caching)
+    if os.path.exists(faiss_bin_target_path):
+        print(f"Vector store already exists at {os.path.dirname(faiss_bin_target_path)}. Skipping download.")
+        return True
+
+    print(f"Attempting to download vector store from Hugging Face Hub '{repo_id}' under '{hf_data_root_prefix}' to '{local_base_dir}'...")
     
     try:
+        # List all files in the repository matching the prefix
         all_files_in_repo = list_repo_files(repo_id=repo_id, repo_type=repo_type, revision="main")
         
+        # Filter for files that start with the desired prefix and are not just the directory itself
         hf_file_paths_to_download = [
             f for f in all_files_in_repo
-            if f.startswith(hf_data_root_prefix)
+            if f.startswith(hf_data_root_prefix) and f != hf_data_root_prefix.rstrip('/')
         ]
         
+        if not hf_file_paths_to_download:
+            st.warning(f"No files found under prefix '{hf_data_root_prefix}' in '{repo_id}'. Please check your dataset content on Hugging Face Hub.")
+            return False
+
     except Exception as e:
         st.error(f"Failed to list files from Hugging Face Hub '{repo_id}': {e}")
         st.error("Please ensure your HF_REPO_ID is correct and the dataset is accessible (check private repo if applicable).")
-        st.stop()
+        return False
 
-    download_count = 0
+    download_success = True
+    downloaded_files_count = 0
     for filename_in_repo in hf_file_paths_to_download:
-        # hf_hub_download will create the 'vector_store/' sub-directory inside local_base_dir
-        # so we don't need to manually strip hf_data_root_prefix from filename_in_repo for download.
-        local_target_path_for_print = os.path.join(local_base_dir, filename_in_repo)
+        # The expected local path where this specific file will land
+        expected_local_file_path = os.path.join(local_base_dir, filename_in_repo)
         
-        # Ensure the local subdirectory exists before downloading the file
-        os.makedirs(os.path.dirname(local_target_path_for_print), exist_ok=True)
+        # Ensure the local subdirectory structure exists
+        os.makedirs(os.path.dirname(expected_local_file_path), exist_ok=True)
 
-        print(f"Downloading {filename_in_repo} to {local_target_path_for_print}...")
+        print(f"Downloading '{filename_in_repo}' to expected local path '{expected_local_file_path}'...")
         try:
-            hf_hub_download(
+            downloaded_path = hf_hub_download(
                 repo_id=repo_id,
                 filename=filename_in_repo,
                 repo_type=repo_type,
-                local_dir=local_base_dir,
+                local_dir=local_base_dir, # This is the base for the HF repo structure
                 local_dir_use_symlinks=False
             )
-            download_count += 1
+            print(f"Successfully downloaded '{filename_in_repo}' to '{downloaded_path}'")
+            downloaded_files_count += 1
         except Exception as e:
-            st.warning(f"Could not download {filename_in_repo}: {e}")
+            st.warning(f"Failed to download '{filename_in_repo}': {e}")
+            download_success = False
 
-    if download_count > 0:
-        print(f"Successfully downloaded {download_count} files from Hugging Face Hub.")
+    if downloaded_files_count > 0:
+        print(f"Total files successfully downloaded: {downloaded_files_count}.")
     else:
-        st.warning(f"No files were downloaded from Hugging Face Hub repo '{repo_id}' under prefix '{hf_data_root_prefix}'. "
-                   f"Please check your repo ID, prefix, and file existence.")
+        st.warning(f"No files were downloaded from Hugging Face Hub repo '{repo_id}' under prefix '{hf_data_root_prefix}'.")
+        download_success = False # Mark as failure if no files were downloaded
+
+    # Final verification after the download loop
+    if not os.path.exists(faiss_bin_target_path):
+        st.error(f"Final verification failed: Expected FAISS index file '{faiss_bin_target_path}' not found after download attempt.")
+        download_success = False
+    else:
+        print(f"Final verification successful: FAISS index file '{faiss_bin_target_path}' exists.")
+
+    return download_success
 
 
 # --- Global RAG Pipeline Initialization ---
 @st.cache_resource
 def initialize_rag_pipeline():
-    # First, download the vector store files
-    download_vector_store_from_hf(HF_REPO_ID, HF_REPO_TYPE, LOCAL_VECTOR_STORE_DIR, HF_DATA_ROOT_PREFIX)
+    # Attempt to download/verify the vector store files
+    download_successful = download_vector_store_from_hf(HF_REPO_ID, HF_REPO_TYPE, LOCAL_VECTOR_STORE_DIR, HF_DATA_ROOT_PREFIX)
+
+    if not download_successful:
+        st.error("Vector store download or verification failed. Cannot initialize RAG Pipeline.")
+        return None # Return None if download was not successful
 
     print("Initializing RAG components for Streamlit app...")
     try:
@@ -120,7 +141,7 @@ def initialize_rag_pipeline():
             embedding_model_name=EMBEDDING_MODEL_NAME,
             faiss_index_path=FAISS_INDEX_PATH,
             faiss_metadata_path=FAISS_METADATA_PATH,
-            chromadb_path=CHROMADB_PATH, # This is now the local downloaded path
+            chromadb_path=CHROMADB_PATH, # This is the local downloaded path
             chromadb_collection_name=CHROMADB_COLLECTION_NAME
         )
         rag_generator = Generator(model_name=LLM_MODEL_NAME)
@@ -129,7 +150,7 @@ def initialize_rag_pipeline():
         return rag_pipeline_instance
     except Exception as e:
         st.error(f"Failed to initialize RAG Pipeline: {e}")
-        st.error("Please ensure vector stores are correctly downloaded and accessible.")
+        st.error("Please ensure vector stores are correctly downloaded and accessible to the Retriever. Check file paths and content integrity. Also, verify 'rag_pipeline.py' for any internal loading issues.")
         return None
 
 rag_pipeline = initialize_rag_pipeline()
