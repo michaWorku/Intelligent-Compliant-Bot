@@ -97,6 +97,10 @@ def download_vector_store_from_hf(repo_id: str, repo_type: str, local_base_dir: 
 
     print(f"Attempting to download vector store from Hugging Face Hub '{repo_id}' under '{hf_data_root_prefix}' to '{local_base_dir}'...")
     
+    # Initialize downloaded_files_count here so it's always defined
+    downloaded_files_count = 0 
+    download_success = True # Assume success unless a download fails
+
     try:
         # List all files in the repository matching the prefix
         all_files_in_repo = list_repo_files(repo_id=repo_id, repo_type=repo_type, revision="main")
@@ -109,6 +113,7 @@ def download_vector_store_from_hf(repo_id: str, repo_type: str, local_base_dir: 
         
         if not hf_file_paths_to_download:
             st.warning(f"No files found under prefix '{hf_data_root_prefix}' in '{repo_id}'. Please check your dataset content on Hugging Face Hub.")
+            # If no files are found to download, it's a failure for the purpose of initialization
             return False
 
     except Exception as e:
@@ -116,8 +121,6 @@ def download_vector_store_from_hf(repo_id: str, repo_type: str, local_base_dir: 
         st.error("Please ensure your HF_REPO_ID is correct and the dataset is accessible (check private repo if applicable).")
         return False
 
-    download_count = 0
-    download_success = True # Assume success unless a download fails
     for filename_in_repo in hf_file_paths_to_download:
         # The expected local path where this specific file will land
         expected_local_file_path = os.path.join(local_base_dir, filename_in_repo)
@@ -140,18 +143,16 @@ def download_vector_store_from_hf(repo_id: str, repo_type: str, local_base_dir: 
             st.warning(f"Could not download '{filename_in_repo}': {e}")
             download_success = False # Mark overall download as failed if any file fails
 
-    if downloaded_files_count > 0:
-        print(f"Total files successfully downloaded: {downloaded_files_count}.")
+    # Final verification after the download loop
+    if downloaded_files_count > 0: # Check if any files were downloaded
+        if not os.path.exists(faiss_bin_target_path):
+            st.error(f"Final verification failed: Expected FAISS index file '{faiss_bin_target_path}' not found after download attempt.")
+            download_success = False
+        else:
+            print(f"Final verification successful: FAISS index file '{faiss_bin_target_path}' exists.")
     else:
         st.warning(f"No files were downloaded from Hugging Face Hub repo '{repo_id}' under prefix '{hf_data_root_prefix}'.")
         download_success = False # Mark as failure if no files were downloaded
-
-    # Final verification after the download loop
-    if not os.path.exists(faiss_bin_target_path):
-        st.error(f"Final verification failed: Expected FAISS index file '{faiss_bin_target_path}' not found after download attempt.")
-        download_success = False
-    else:
-        print(f"Final verification successful: FAISS index file '{faiss_bin_target_path}' exists.")
 
     return download_success
 
@@ -262,8 +263,6 @@ st.selectbox(
 )
 
 # --- Main Chat Input ---
-# st.chat_input does not accept a 'value' parameter.
-# We will use its return value directly.
 prompt = st.chat_input("Your question...", key="main_chat_input")
 
 # --- Process Prompt (either from chat_input or quick_question_selector) ---
@@ -325,11 +324,11 @@ with st.sidebar:
         st.session_state.sources = ""
         st.rerun() # Rerun to apply new model selection
 
-    st.warning(
-        "**Important LLM Note:** Models like Mistral-7B, Falcon-7B, Pythia-12B, Flan-T5 XL, Zephyr-7B, and Nous-Hermes-2-Mistral-7B-DPO are very large (multi-GB) and **will likely cause out-of-memory errors or be extremely slow** on Streamlit Community Cloud's free CPU-only tier. "
-        "For optimal performance with these powerful LLMs, **API-based solutions** (e.g., Gemini API, Hugging Face Inference Endpoints) on a paid cloud infrastructure are required. "
-        "The **GGUF model ('TheBloke/Mistral-7B-Instruct-GGUF') will NOT load** with the current setup."
-    )
+    # st.warning(
+    #     "**Important LLM Note:** Models like Mistral-7B, Falcon-7B, Pythia-12B, Flan-T5 XL, Zephyr-7B, and Nous-Hermes-2-Mistral-7B-DPO are very large (multi-GB) and **will likely cause out-of-memory errors or be extremely slow** on Streamlit Community Cloud's free CPU-only tier. "
+    #     "For optimal performance with these powerful LLMs, **API-based solutions** (e.g., Gemini API, Hugging Face Inference Endpoints) on a paid cloud infrastructure are required. "
+    #     "The **GGUF model ('TheBloke/Mistral-7B-Instruct-GGUF') will NOT load** with the current setup."
+    # )
 
 
     # Vector Store Selection (Now safely accessible because rag_pipeline is globally defined)
