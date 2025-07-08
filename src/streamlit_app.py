@@ -46,20 +46,22 @@ HF_DATA_ROOT_PREFIX = "vector_store/"
 
 EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
-# --- LLM Model Options ---
+# --- LLM Model Options (now just for reference, not selection) ---
+# We are fixing the LLM to the default for stability on Streamlit Community Cloud.
 LLM_MODEL_OPTIONS = {
     "Flan-T5 Small (Default - CPU Friendly)": "google/flan-t5-small",
-    "Flan-T5 Base (Larger, Slower on CPU)": "google/flan-t5-base",
-    "Flan-T5 XL (Very Large, Likely OOM on Free Tier)": "google/flan-t5-xl",
-    "Mistral-7B-Instruct-v0.2 (Large, Needs GPU)": "mistralai/Mistral-7B-Instruct-v0.2",
-    "Falcon-7B-Instruct (Large, Needs GPU)": "tiiuae/falcon-7b-instruct",
-    "Pythia-12B (Very Large, Needs GPU)": "OpenAssistant/oasst-sft-1-pythia-12b",
-    "Zephyr-7B-Alpha (Large, Needs GPU)": "HuggingFaceH4/zephyr-7b-alpha",
-    "Nous-Hermes-2-Mistral-7B-DPO (Large, Needs GPU)": "NousResearch/Nous-Hermes-2-Mistral-7B-DPO",
-    "BART-Large-CNN (Summarization, May Fail)": "facebook/bart-large-cnn",
-    "Mistral-7B-Instruct-GGUF (Special Format, Will Not Load!)": "TheBloke/Mistral-7B-Instruct-GGUF", 
+    # Other models are commented out as they are not practical for free tier deployment.
+    # "Flan-T5 Base (Larger, Slower on CPU)": "google/flan-t5-base",
+    # "Flan-T5 XL (Very Large, Likely OOM on Free Tier)": "google/flan-t5-xl",
+    # "Mistral-7B-Instruct-v0.2 (Large, Needs GPU)": "mistralai/Mistral-7B-Instruct-v0.2",
+    # "Falcon-7B-Instruct (Large, Needs GPU)": "tiiuae/falcon-7b-instruct",
+    # "Pythia-12B (Very Large, Needs GPU)": "OpenAssistant/oasst-sft-1-pythia-12b",
+    # "Zephyr-7B-Alpha (Large, Needs GPU)": "HuggingFaceH4/zephyr-7b-alpha",
+    # "Nous-Hermes-2-Mistral-7B-DPO (Large, Needs GPU)": "NousResearch/Nous-Hermes-2-Mistral-7B-DPO",
+    # "BART-Large-CNN (Summarization, May Fail)": "facebook/bart-large-cnn",
+    # "Mistral-7B-Instruct-GGUF (Special Format, Will Not Load!)": "TheBloke/Mistral-7B-Instruct-GGUF", 
 }
-DEFAULT_LLM_MODEL_KEY = "Flan-T5 Small (Default - CPU Friendly)"
+DEFAULT_LLM_MODEL_KEY = "Flan-T5 Small (Default - CPU Friendly)" # This will be the only active model
 
 
 TOP_K_RETRIEVAL = 5
@@ -143,16 +145,18 @@ def download_vector_store_from_hf(repo_id: str, repo_type: str, local_base_dir: 
             st.warning(f"Could not download '{filename_in_repo}': {e}")
             download_success = False # Mark overall download as failed if any file fails
 
-    # Final verification after the download loop
-    if downloaded_files_count > 0: # Check if any files were downloaded
-        if not os.path.exists(faiss_bin_target_path):
-            st.error(f"Final verification failed: Expected FAISS index file '{faiss_bin_target_path}' not found after download attempt.")
-            download_success = False
-        else:
-            print(f"Final verification successful: FAISS index file '{faiss_bin_target_path}' exists.")
+    if downloaded_files_count > 0:
+        print(f"Total files successfully downloaded: {downloaded_files_count}.")
     else:
         st.warning(f"No files were downloaded from Hugging Face Hub repo '{repo_id}' under prefix '{hf_data_root_prefix}'.")
         download_success = False # Mark as failure if no files were downloaded
+
+    # Final verification after the download loop
+    if not os.path.exists(faiss_bin_target_path):
+        st.error(f"Final verification failed: Expected FAISS index file '{faiss_bin_target_path}' not found after download attempt.")
+        download_success = False
+    else:
+        print(f"Final verification successful: FAISS index file '{faiss_bin_target_path}' exists.")
 
     return download_success
 
@@ -185,7 +189,7 @@ def initialize_rag_pipeline(llm_model_name: str):
         return rag_pipeline_instance
     except Exception as e:
         st.error(f"Failed to initialize RAG Pipeline with {llm_model_name}: {e}")
-        st.error("This often happens with larger models due to insufficient memory (RAM) on Streamlit Community Cloud's free tier. Try a smaller model (e.g., 'Flan-T5 Small').")
+        st.error("This often happens with larger models due to insufficient memory (RAM) on Streamlit Community Cloud's free tier. The app will now use a dummy response if the model fails to load.")
         st.error("Please ensure vector stores are correctly downloaded and accessible to the Retriever. Check file paths and content integrity. Also, verify 'rag_pipeline.py' for any internal loading issues.")
         return None
 
@@ -217,7 +221,7 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "sources" not in st.session_state:
     st.session_state.sources = ""
-# Initialize selected LLM model in session state
+# Initialize selected LLM model in session state (now fixed to default)
 if "selected_llm_model" not in st.session_state:
     st.session_state.selected_llm_model = DEFAULT_LLM_MODEL_KEY
 # Initialize quick question trigger in session state
@@ -226,12 +230,7 @@ if "quick_question_prompt_trigger" not in st.session_state:
 
 
 # *** IMPORTANT FIX START: Initialize RAG Pipeline at the top level ***
-# This ensures 'rag_pipeline' is always defined when the script runs,
-# and it's memoized by @st.cache_resource.
-# If the LLM model changes in the sidebar, st.rerun() will be called,
-# and this line will re-execute, re-initializing the pipeline with the new model
-# (or retrieving the cached version if the model hasn't changed).
-rag_pipeline = initialize_rag_pipeline(LLM_MODEL_OPTIONS[st.session_state.selected_llm_model])
+rag_pipeline = initialize_rag_pipeline(LLM_MODEL_OPTIONS[DEFAULT_LLM_MODEL_KEY]) # Always use default LLM
 RAG_INITIALIZED = (rag_pipeline is not None)
 # *** IMPORTANT FIX END ***
 
@@ -249,8 +248,6 @@ def handle_quick_question_selection():
         st.session_state.quick_question_prompt_trigger = selected_question
         # Reset the selectbox to placeholder after selection
         st.session_state.quick_question_selector = QUICK_START_QUESTIONS[0]
-        # st.rerun() # Re-running from a callback can be complex,
-                   # the main script execution will pick up the trigger on next rerun
 
 
 st.selectbox(
@@ -282,8 +279,6 @@ if actual_prompt:
         st.markdown(actual_prompt)
 
     # The RAG pipeline is already initialized globally at the top level
-    # so we just need to ensure RAG_INITIALIZED is true
-    # RAG_INITIALIZED is set globally after initialize_rag_pipeline is called
     if not RAG_INITIALIZED:
         ai_response = "The RAG system is not initialized. Please check server logs for errors."
         st.session_state.sources = ""
@@ -308,27 +303,26 @@ if actual_prompt:
 with st.sidebar:
     st.header("Settings")
     
-    # LLM Model Selection Dropdown
-    selected_model_display_name = st.selectbox(
-        "Choose LLM Model:",
-        options=list(LLM_MODEL_OPTIONS.keys()),
-        index=list(LLM_MODEL_OPTIONS.keys()).index(st.session_state.selected_llm_model),
-        key="llm_model_selector",
-        help="Select the Large Language Model for generating answers."
-    )
-    # Update session state if a new model is selected
-    if selected_model_display_name != st.session_state.selected_llm_model:
-        st.session_state.selected_llm_model = selected_model_display_name
-        # Clear chat and rerun when model changes to force re-initialization
-        st.session_state.messages = []
-        st.session_state.sources = ""
-        st.rerun() # Rerun to apply new model selection
-
-    # st.warning(
-    #     "**Important LLM Note:** Models like Mistral-7B, Falcon-7B, Pythia-12B, Flan-T5 XL, Zephyr-7B, and Nous-Hermes-2-Mistral-7B-DPO are very large (multi-GB) and **will likely cause out-of-memory errors or be extremely slow** on Streamlit Community Cloud's free CPU-only tier. "
-    #     "For optimal performance with these powerful LLMs, **API-based solutions** (e.g., Gemini API, Hugging Face Inference Endpoints) on a paid cloud infrastructure are required. "
-    #     "The **GGUF model ('TheBloke/Mistral-7B-Instruct-GGUF') will NOT load** with the current setup."
+    # LLM Model Selection Dropdown (COMMENTED OUT)
+    # selected_model_display_name = st.selectbox(
+    #     "Choose LLM Model:",
+    #     options=list(LLM_MODEL_OPTIONS.keys()),
+    #     index=list(LLM_MODEL_OPTIONS.keys()).index(st.session_state.selected_llm_model),
+    #     key="llm_model_selector",
+    #     help="Select the Large Language Model for generating answers."
     # )
+    # # Update session state if a new model is selected
+    # if selected_model_display_name != st.session_state.selected_llm_model:
+    #     st.session_state.selected_llm_model = selected_model_display_name
+    #     # Clear chat and rerun when model changes to force re-initialization
+    #     st.session_state.messages = []
+    #     st.session_state.sources = ""
+    #     st.rerun() # Rerun to apply new model selection
+
+    st.info( # Changed from warning to info as selection is fixed
+        "**LLM Model:** Currently using **Flan-T5 Small** for stable performance on Streamlit Community Cloud's free tier. "
+        "Larger models typically require dedicated GPU resources or API-based solutions."
+    )
 
 
     # Vector Store Selection (Now safely accessible because rag_pipeline is globally defined)
