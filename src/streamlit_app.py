@@ -156,8 +156,8 @@ def download_vector_store_from_hf(repo_id: str, repo_type: str, local_base_dir: 
     return download_success
 
 
-# --- Global RAG Pipeline Initialization ---
-# This function will now also take the selected LLM model name
+# --- Global RAG Pipeline Initialization Function ---
+# This function will be called once at the top level and re-called if LLM selection changes.
 @st.cache_resource
 def initialize_rag_pipeline(llm_model_name: str):
     # Attempt to download/verify the vector store files
@@ -188,6 +188,23 @@ def initialize_rag_pipeline(llm_model_name: str):
         st.error("Please ensure vector stores are correctly downloaded and accessible to the Retriever. Check file paths and content integrity. Also, verify 'rag_pipeline.py' for any internal loading issues.")
         return None
 
+# --- Helper Functions (Moved up for definition order) ---
+def format_sources_for_display(sources: List[Dict]) -> str:
+    """Formats retrieved sources into a readable string for Streamlit Markdown."""
+    if not sources:
+        return "No specific sources retrieved for this query."
+
+    formatted_text = ""
+    for i, source in enumerate(sources):
+        snippet = source['text'][:250] + '...' if len(source['text']) > 250 else source['text']
+        formatted_text += (
+            f"**{i+1}. Product:** {source.get('product', 'N/A')}\n"
+            f"   **Complaint ID:** {source.get('original_id', 'N/A')}\n"
+            f"   **Snippet:** \"{snippet}\"\n\n"
+        )
+    return formatted_text
+
+
 # --- Streamlit UI ---
 st.set_page_config(page_title="CrediTrust Complaint Chatbot", layout="centered")
 
@@ -202,9 +219,20 @@ if "sources" not in st.session_state:
 # Initialize selected LLM model in session state
 if "selected_llm_model" not in st.session_state:
     st.session_state.selected_llm_model = DEFAULT_LLM_MODEL_KEY
-# Initialize chat input value in session state
-if "chat_input_value" not in st.session_state:
-    st.session_state.chat_input_value = ""
+# Initialize quick question trigger in session state
+if "quick_question_prompt_trigger" not in st.session_state:
+    st.session_state.quick_question_prompt_trigger = None
+
+
+# *** IMPORTANT FIX START: Initialize RAG Pipeline at the top level ***
+# This ensures 'rag_pipeline' is always defined when the script runs,
+# and it's memoized by @st.cache_resource.
+# If the LLM model changes in the sidebar, st.rerun() will be called,
+# and this line will re-execute, re-initializing the pipeline with the new model
+# (or retrieving the cached version if the model hasn't changed).
+rag_pipeline = initialize_rag_pipeline(LLM_MODEL_OPTIONS[st.session_state.selected_llm_model])
+RAG_INITIALIZED = (rag_pipeline is not None)
+# *** IMPORTANT FIX END ***
 
 
 # Display chat messages from history on app rerun
@@ -213,13 +241,15 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
 
 # --- Quick Start Questions Dropdown ---
-# Callback function to update the chat input when a quick question is selected
-def update_chat_input_from_quick_question():
+# Callback function to handle quick question selection
+def handle_quick_question_selection():
     selected_question = st.session_state.quick_question_selector
-    if selected_question != QUICK_START_QUESTIONS[0]: # Avoid setting placeholder
-        st.session_state.chat_input_value = selected_question
-        # Clear the dropdown after selection to allow re-selection
+    if selected_question != QUICK_START_QUESTIONS[0]: # Avoid processing placeholder
+        st.session_state.quick_question_prompt_trigger = selected_question
+        # Reset the selectbox to placeholder after selection
         st.session_state.quick_question_selector = QUICK_START_QUESTIONS[0]
+        # st.rerun() # Re-running from a callback can be complex,
+                   # the main script execution will pick up the trigger on next rerun
 
 
 st.selectbox(
@@ -227,50 +257,51 @@ st.selectbox(
     options=QUICK_START_QUESTIONS,
     index=0,
     key="quick_question_selector",
-    on_change=update_chat_input_from_quick_question,
+    on_change=handle_quick_question_selection,
     help="Select a predefined question to populate the chat input."
 )
 
-# Input for new message
-# The value is now controlled by st.session_state.chat_input_value
-prompt = st.chat_input("Your question...", key="main_chat_input", value=st.session_state.chat_input_value)
+# --- Main Chat Input ---
+prompt = st.chat_input("Your question...", key="main_chat_input")
 
-if prompt:
-    # Clear the chat input value in session state after it's used
-    st.session_state.chat_input_value = "" # This prevents the input from sticking
+# --- Process Prompt (either from chat_input or quick_question_selector) ---
+actual_prompt = None
+if prompt: # User typed something in the chat input
+    actual_prompt = prompt
+elif st.session_state.quick_question_prompt_trigger: # User selected a quick question
+    actual_prompt = st.session_state.quick_question_prompt_trigger
+    st.session_state.quick_question_prompt_trigger = None # Clear the trigger after using it
 
+
+if actual_prompt:
     # Add user message to chat history
-    st.session_state.messages.append({"role": "user", "content": prompt})
+    st.session_state.messages.append({"role": "user", "content": actual_prompt})
     # Display user message
     with st.chat_message("user"):
-        st.markdown(prompt)
+        st.markdown(actual_prompt)
 
-    # Re-initialize RAG pipeline with the currently selected LLM model
-    rag_pipeline = initialize_rag_pipeline(LLM_MODEL_OPTIONS[st.session_state.selected_llm_model])
-    RAG_INITIALIZED = (rag_pipeline is not None)
+    # The RAG pipeline is already initialized globally at the top level
+    # so we just need to ensure RAG_INITIALIZED is true
+    # RAG_INITIALIZED is set globally after initialize_rag_pipeline is called
+    if not RAG_INITIALIZED:
+        ai_response = "The RAG system is not initialized. Please check server logs for errors."
+        st.session_state.sources = ""
+    else:
+        vector_store_choice = st.session_state.get('vector_store_choice', 'faiss')
 
-    # Generate AI response
-    with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            if not RAG_INITIALIZED:
-                ai_response = "The RAG system is not initialized. Please check server logs for errors."
-                st.session_state.sources = ""
-            else:
-                vector_store_choice = st.session_state.get('vector_store_choice', 'faiss')
-
-                if vector_store_choice == 'chromadb' and (not CHROMADB_AVAILABLE or rag_pipeline.retriever.chroma_collection is None):
-                    ai_response = "ChromaDB is not available. Please select FAISS for retrieval."
-                    st.session_state.sources = ""
-                elif vector_store_choice == 'faiss' and (rag_pipeline.retriever.faiss_index is None or rag_pipeline.retriever.faiss_metadata is None):
-                    ai_response = "FAISS is not available. Please check the vector store files."
-                    st.session_session.sources = ""
-                else:
-                    result = rag_pipeline.run(prompt, k=TOP_K_RETRIEVAL, vector_store_type=vector_store_choice)
-                    ai_response = result['answer']
-                    st.session_state.sources = format_sources_for_display(result['sources'])
-            
-            st.markdown(ai_response)
-            st.session_state.messages.append({"role": "assistant", "content": ai_response})
+        if vector_store_choice == 'chromadb' and (not CHROMADB_AVAILABLE or rag_pipeline.retriever.chroma_collection is None):
+            ai_response = "ChromaDB is not available. Please select FAISS for retrieval."
+            st.session_state.sources = ""
+        elif vector_store_choice == 'faiss' and (rag_pipeline.retriever.faiss_index is None or rag_pipeline.retriever.faiss_metadata is None):
+            ai_response = "FAISS is not available. Please check the vector store files."
+            st.session_state.sources = ""
+        else:
+            result = rag_pipeline.run(actual_prompt, k=TOP_K_RETRIEVAL, vector_store_type=vector_store_choice)
+            ai_response = result['answer']
+            st.session_state.sources = format_sources_for_display(result['sources'])
+        
+    st.markdown(ai_response)
+    st.session_state.messages.append({"role": "assistant", "content": ai_response})
 
 # Sidebar for controls
 with st.sidebar:
@@ -299,16 +330,23 @@ with st.sidebar:
     )
 
 
-    # Vector Store Selection
+    # Vector Store Selection (Now safely accessible because rag_pipeline is globally defined)
     options = ["faiss"]
-    # Check if rag_pipeline is initialized before accessing its retriever
+    # Check if rag_pipeline is initialized and if its retriever has a chroma_collection
     if CHROMADB_AVAILABLE and rag_pipeline is not None and rag_pipeline.retriever.chroma_collection:
         options.append("chromadb")
     
+    # Ensure a default index is always valid even if only 'faiss' is available
+    current_vector_store_choice = st.session_state.get('vector_store_choice', 'faiss')
+    try:
+        default_index = options.index(current_vector_store_choice)
+    except ValueError:
+        default_index = 0 # Fallback to FAISS if current choice isn't in available options
+
     st.session_state.vector_store_choice = st.radio(
         "Choose Vector Store for Retrieval:",
         options,
-        index=0,
+        index=default_index,
         key="vector_store_radio",
         help="Select which vector database to use for retrieving relevant complaint chunks."
     )
