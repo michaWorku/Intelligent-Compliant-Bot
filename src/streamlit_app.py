@@ -45,8 +45,39 @@ HF_DATA_ROOT_PREFIX = "vector_store/"
 
 
 EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-LLM_MODEL_NAME = "google/flan-t5-small"
+
+# --- LLM Model Options ---
+LLM_MODEL_OPTIONS = {
+    "Flan-T5 Small (Default - CPU Friendly)": "google/flan-t5-small",
+    "Flan-T5 Base (Larger, Slower on CPU)": "google/flan-t5-base",
+    "Flan-T5 XL (Very Large, Likely OOM on Free Tier)": "google/flan-t5-xl",
+    "Mistral-7B-Instruct-v0.2 (Large, Needs GPU)": "mistralai/Mistral-7B-Instruct-v0.2",
+    "Falcon-7B-Instruct (Large, Needs GPU)": "tiiuae/falcon-7b-instruct",
+    "Pythia-12B (Very Large, Needs GPU)": "OpenAssistant/oasst-sft-1-pythia-12b",
+    "Zephyr-7B-Alpha (Large, Needs GPU)": "HuggingFaceH4/zephyr-7b-alpha",
+    "Nous-Hermes-2-Mistral-7B-DPO (Large, Needs GPU)": "NousResearch/Nous-Hermes-2-Mistral-7B-DPO",
+    "BART-Large-CNN (Summarization, May Fail)": "facebook/bart-large-cnn",
+    "Mistral-7B-Instruct-GGUF (Special Format, Will Not Load!)": "TheBloke/Mistral-7B-Instruct-GGUF", 
+}
+DEFAULT_LLM_MODEL_KEY = "Flan-T5 Small (Default - CPU Friendly)"
+
+
 TOP_K_RETRIEVAL = 5
+
+# --- Quick Start Questions ---
+QUICK_START_QUESTIONS = [
+    "Select a question...", # Placeholder for initial selection
+    "What are common issues with credit card billing?",
+    "Tell me about problems with personal loan interest rates.",
+    "What do customers complain about regarding Buy Now, Pay Later services?",
+    "Are there issues accessing money from savings accounts?",
+    "Describe typical problems with unauthorized money transfers.",
+    "What kind of disputes arise from incorrect information on credit reports?",
+    "How do customers complain about hidden fees in personal loans?",
+    "What are the security concerns for money transfer services?",
+    "Are there complaints about difficulty closing a credit card account?",
+    "Summarize issues regarding delays in receiving funds from savings accounts."
+]
 
 
 # --- Function to Download Vector Store from Hugging Face Hub ---
@@ -86,6 +117,7 @@ def download_vector_store_from_hf(repo_id: str, repo_type: str, local_base_dir: 
         return False
 
     download_count = 0
+    download_success = True # Assume success unless a download fails
     for filename_in_repo in hf_file_paths_to_download:
         # The expected local path where this specific file will land
         expected_local_file_path = os.path.join(local_base_dir, filename_in_repo)
@@ -106,7 +138,7 @@ def download_vector_store_from_hf(repo_id: str, repo_type: str, local_base_dir: 
             downloaded_files_count += 1
         except Exception as e:
             st.warning(f"Could not download '{filename_in_repo}': {e}")
-            download_success = False
+            download_success = False # Mark overall download as failed if any file fails
 
     if downloaded_files_count > 0:
         print(f"Total files successfully downloaded: {downloaded_files_count}.")
@@ -125,8 +157,9 @@ def download_vector_store_from_hf(repo_id: str, repo_type: str, local_base_dir: 
 
 
 # --- Global RAG Pipeline Initialization ---
+# This function will now also take the selected LLM model name
 @st.cache_resource
-def initialize_rag_pipeline():
+def initialize_rag_pipeline(llm_model_name: str):
     # Attempt to download/verify the vector store files
     download_successful = download_vector_store_from_hf(HF_REPO_ID, HF_REPO_TYPE, LOCAL_VECTOR_STORE_DIR, HF_DATA_ROOT_PREFIX)
 
@@ -134,7 +167,7 @@ def initialize_rag_pipeline():
         st.error("Vector store download or verification failed. Cannot initialize RAG Pipeline.")
         return None # Return None if download was not successful
 
-    print("Initializing RAG components for Streamlit app...")
+    print(f"Initializing RAG components for Streamlit app with LLM: {llm_model_name}...")
     try:
         rag_retriever = Retriever(
             embedding_model_name=EMBEDDING_MODEL_NAME,
@@ -143,33 +176,17 @@ def initialize_rag_pipeline():
             chromadb_path=CHROMADB_PATH, # This is the local downloaded path
             chromadb_collection_name=CHROMADB_COLLECTION_NAME
         )
-        rag_generator = Generator(model_name=LLM_MODEL_NAME)
+        # Pass the selected LLM model name to the Generator
+        rag_generator = Generator(model_name=llm_model_name)
+        st.success(f"Successfully loaded LLM: {llm_model_name}. Initializing RAG Pipeline...")
         rag_pipeline_instance = RAGPipeline(rag_retriever, rag_generator)
         print("RAG Pipeline initialized successfully for Streamlit app.")
         return rag_pipeline_instance
     except Exception as e:
-        st.error(f"Failed to initialize RAG Pipeline: {e}")
+        st.error(f"Failed to initialize RAG Pipeline with {llm_model_name}: {e}")
+        st.error("This often happens with larger models due to insufficient memory (RAM) on Streamlit Community Cloud's free tier. Try a smaller model (e.g., 'Flan-T5 Small').")
         st.error("Please ensure vector stores are correctly downloaded and accessible to the Retriever. Check file paths and content integrity. Also, verify 'rag_pipeline.py' for any internal loading issues.")
         return None
-
-rag_pipeline = initialize_rag_pipeline()
-RAG_INITIALIZED = (rag_pipeline is not None)
-
-# --- Helper Functions (rest of the app.py remains the same) ---
-def format_sources_for_display(sources: List[Dict]) -> str:
-    """Formats retrieved sources into a readable string for Streamlit Markdown."""
-    if not sources:
-        return "No specific sources retrieved for this query."
-
-    formatted_text = ""
-    for i, source in enumerate(sources):
-        snippet = source['text'][:250] + '...' if len(source['text']) > 250 else source['text']
-        formatted_text += (
-            f"**{i+1}. Product:** {source.get('product', 'N/A')}\n"
-            f"   **Complaint ID:** {source.get('original_id', 'N/A')}\n"
-            f"   **Snippet:** \"{snippet}\"\n\n"
-        )
-    return formatted_text
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="CrediTrust Complaint Chatbot", layout="centered")
@@ -177,20 +194,62 @@ st.set_page_config(page_title="CrediTrust Complaint Chatbot", layout="centered")
 st.title("CrediTrust Complaint Analysis Chatbot")
 st.markdown("Ask questions about customer complaints related to financial products (Credit Card, Personal Loan, BNPL, Savings Account, Money Transfer).")
 
+# Initialize chat history in session state
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "sources" not in st.session_state:
     st.session_state.sources = ""
+# Initialize selected LLM model in session state
+if "selected_llm_model" not in st.session_state:
+    st.session_state.selected_llm_model = DEFAULT_LLM_MODEL_KEY
+# Initialize chat input value in session state
+if "chat_input_value" not in st.session_state:
+    st.session_state.chat_input_value = ""
 
+
+# Display chat messages from history on app rerun
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-if prompt := st.chat_input("Your question..."):
+# --- Quick Start Questions Dropdown ---
+# Callback function to update the chat input when a quick question is selected
+def update_chat_input_from_quick_question():
+    selected_question = st.session_state.quick_question_selector
+    if selected_question != QUICK_START_QUESTIONS[0]: # Avoid setting placeholder
+        st.session_state.chat_input_value = selected_question
+        # Clear the dropdown after selection to allow re-selection
+        st.session_state.quick_question_selector = QUICK_START_QUESTIONS[0]
+
+
+st.selectbox(
+    "Quick Start Questions:",
+    options=QUICK_START_QUESTIONS,
+    index=0,
+    key="quick_question_selector",
+    on_change=update_chat_input_from_quick_question,
+    help="Select a predefined question to populate the chat input."
+)
+
+# Input for new message
+# The value is now controlled by st.session_state.chat_input_value
+prompt = st.chat_input("Your question...", key="main_chat_input", value=st.session_state.chat_input_value)
+
+if prompt:
+    # Clear the chat input value in session state after it's used
+    st.session_state.chat_input_value = "" # This prevents the input from sticking
+
+    # Add user message to chat history
     st.session_state.messages.append({"role": "user", "content": prompt})
+    # Display user message
     with st.chat_message("user"):
         st.markdown(prompt)
 
+    # Re-initialize RAG pipeline with the currently selected LLM model
+    rag_pipeline = initialize_rag_pipeline(LLM_MODEL_OPTIONS[st.session_state.selected_llm_model])
+    RAG_INITIALIZED = (rag_pipeline is not None)
+
+    # Generate AI response
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
             if not RAG_INITIALIZED:
@@ -204,7 +263,7 @@ if prompt := st.chat_input("Your question..."):
                     st.session_state.sources = ""
                 elif vector_store_choice == 'faiss' and (rag_pipeline.retriever.faiss_index is None or rag_pipeline.retriever.faiss_metadata is None):
                     ai_response = "FAISS is not available. Please check the vector store files."
-                    st.session_state.sources = ""
+                    st.session_session.sources = ""
                 else:
                     result = rag_pipeline.run(prompt, k=TOP_K_RETRIEVAL, vector_store_type=vector_store_choice)
                     ai_response = result['answer']
@@ -213,11 +272,37 @@ if prompt := st.chat_input("Your question..."):
             st.markdown(ai_response)
             st.session_state.messages.append({"role": "assistant", "content": ai_response})
 
+# Sidebar for controls
 with st.sidebar:
     st.header("Settings")
     
+    # LLM Model Selection Dropdown
+    selected_model_display_name = st.selectbox(
+        "Choose LLM Model:",
+        options=list(LLM_MODEL_OPTIONS.keys()),
+        index=list(LLM_MODEL_OPTIONS.keys()).index(st.session_state.selected_llm_model),
+        key="llm_model_selector",
+        help="Select the Large Language Model for generating answers."
+    )
+    # Update session state if a new model is selected
+    if selected_model_display_name != st.session_state.selected_llm_model:
+        st.session_state.selected_llm_model = selected_model_display_name
+        # Clear chat and rerun when model changes to force re-initialization
+        st.session_state.messages = []
+        st.session_state.sources = ""
+        st.rerun() # Rerun to apply new model selection
+
+    st.warning(
+        "**Important LLM Note:** Models like Mistral-7B, Falcon-7B, Pythia-12B, Flan-T5 XL, Zephyr-7B, and Nous-Hermes-2-Mistral-7B-DPO are very large (multi-GB) and **will likely cause out-of-memory errors or be extremely slow** on Streamlit Community Cloud's free CPU-only tier. "
+        "For optimal performance with these powerful LLMs, **API-based solutions** (e.g., Gemini API, Hugging Face Inference Endpoints) on a paid cloud infrastructure are required. "
+        "The **GGUF model ('TheBloke/Mistral-7B-Instruct-GGUF') will NOT load** with the current setup."
+    )
+
+
+    # Vector Store Selection
     options = ["faiss"]
-    if CHROMADB_AVAILABLE and rag_pipeline and rag_pipeline.retriever.chroma_collection:
+    # Check if rag_pipeline is initialized before accessing its retriever
+    if CHROMADB_AVAILABLE and rag_pipeline is not None and rag_pipeline.retriever.chroma_collection:
         options.append("chromadb")
     
     st.session_state.vector_store_choice = st.radio(
