@@ -262,6 +262,8 @@ st.selectbox(
 )
 
 # --- Main Chat Input ---
+# st.chat_input does not accept a 'value' parameter.
+# We will use its return value directly.
 prompt = st.chat_input("Your question...", key="main_chat_input")
 
 # --- Process Prompt (either from chat_input or quick_question_selector) ---
